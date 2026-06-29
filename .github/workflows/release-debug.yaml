@@ -1,0 +1,74 @@
+name: Release Debug APK
+
+# Build the (unsigned) debug APKs and publish them to a GitHub Release.
+# Triggered by pushing a tag like `debug-*`, so no signing key or collaborator
+# API access is needed — the in-workflow GITHUB_TOKEN has the write permission.
+on:
+  push:
+    tags:
+      - 'debug-*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ReleaseDebug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Checkout submodules
+        run: git submodule update --init --recursive --force
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+          go-version: '1.26'
+
+      - name: Apply Patches
+        run: |
+          cd $(go env GOROOT)
+          for p in $GITHUB_WORKSPACE/.github/patch/*.patch; do patch --verbose -p 1 < "$p"; done
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Update CA
+        run: |
+          sudo apt-get update && sudo apt-get install ca-certificates
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt core/src/foss/golang/clash/component/ca/ca-certificates.crt
+
+      - name: Build
+        run: ./gradlew --no-daemon app:assembleAlphaRelease
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Unsigned debug build of CMFA with the WebDAV cloud sync feature.
+            Install the APK matching your phone's ABI (most modern phones: `arm64-v8a`; if unsure use `universal`).
+          files: |
+            app/build/outputs/apk/alpha/release/*.apk
