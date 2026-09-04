@@ -1,15 +1,19 @@
 name: Sync Upstream
 
-# Keep this fork current with MetaCubeX/ClashMetaForAndroid and publish our own
-# release whenever upstream moves. Our WebDAV-sync commits sit on top of upstream
-# and are preserved by the merge. If upstream ever edits the same lines we did,
-# the merge step fails loudly so it can be resolved by hand.
+# Keep this fork current with MetaCubeX/ClashMetaForAndroid. Our WebDAV-sync
+# commits sit on top of upstream and are preserved by the merge. If upstream
+# ever edits the same lines we did, the merge step fails loudly.
 #
-# Everything runs in one job on purpose: the build happens in the same working
-# tree we just merged, so there is no risk of building a pre-merge commit.
+# Code is synced on every run, but a release is only published when upstream
+# actually ships a new version (versionName changes) — not for every commit,
+# so routine dependency bumps don't spam releases.
+#
+# Merge, build and release all run in one job on purpose: the build happens in
+# the same working tree we just merged, so we never build a pre-merge commit.
 on:
   schedule:
-    - cron: '0 18 * * *'
+    # 1st of each month, 18:00 UTC
+    - cron: '0 18 1 * *'
   workflow_dispatch:
 
 permissions:
@@ -34,9 +38,19 @@ jobs:
         run: |
           git remote add upstream https://github.com/MetaCubeX/ClashMetaForAndroid.git || true
           git fetch upstream
+
+          read_version() {
+            grep -oE 'versionName = "[^"]+"' build.gradle.kts | head -1 | sed 's/.*"\(.*\)"/\1/'
+          }
+
           BEFORE=$(git rev-parse HEAD)
+          VERSION_BEFORE=$(read_version)
+
           git merge upstream/main --no-edit
+
           AFTER=$(git rev-parse HEAD)
+          VERSION_AFTER=$(read_version)
+
           if [ "$BEFORE" = "$AFTER" ]; then
             echo "Already up to date with upstream."
             echo "changed=false" >> $GITHUB_OUTPUT
@@ -44,56 +58,64 @@ jobs:
             echo "Merged new upstream commits."
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
-          VERSION=$(grep -oE 'versionName = "[^"]+"' build.gradle.kts | head -1 | sed 's/.*"\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if [ "$VERSION_BEFORE" != "$VERSION_AFTER" ]; then
+            echo "Upstream shipped a new version: $VERSION_BEFORE -> $VERSION_AFTER"
+            echo "released=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version unchanged ($VERSION_AFTER) - syncing code only, no release."
+            echo "released=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "version=$VERSION_AFTER" >> $GITHUB_OUTPUT
 
       - name: Push merged main
         if: steps.merge.outputs.changed == 'true'
         run: git push origin HEAD:main
 
-      # ---- build the synced code and publish it as our own release ----
+      # ---- only when upstream actually released a new version ----
 
       - name: Checkout submodules
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         run: git submodule update --init --recursive --force
 
       - name: Setup Java
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         uses: actions/setup-java@v5
         with:
           distribution: "temurin"
           java-version: 21
 
       - name: Setup Gradle
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         uses: gradle/actions/setup-gradle@v5
 
       - name: Setup Go
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
           go-version: '1.26'
 
       - name: Apply Patches
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         run: |
           cd $(go env GOROOT)
           for p in $GITHUB_WORKSPACE/.github/patch/*.patch; do patch --verbose -p 1 < "$p"; done
 
       - name: Update CA
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         run: |
           sudo apt-get update && sudo apt-get install ca-certificates
           sudo update-ca-certificates
           cp -f /etc/ssl/certs/ca-certificates.crt core/src/foss/golang/clash/component/ca/ca-certificates.crt
 
       - name: Build
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         run: ./gradlew --no-daemon app:assembleAlphaRelease
 
       - name: Publish Release
-        if: steps.merge.outputs.changed == 'true'
+        if: steps.merge.outputs.released == 'true'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.merge.outputs.version }}-webdav
