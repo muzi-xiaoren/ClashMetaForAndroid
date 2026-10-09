@@ -10,6 +10,10 @@ name: Sync Upstream
 #
 # Merge, build and release all run in one job on purpose: the build happens in
 # the same working tree we just merged, so we never build a pre-merge commit.
+#
+# Every run (success or failure) ends by overwriting .github/sync-status.md with
+# a commit. Besides being a run log, this keeps the repository active: GitHub
+# disables scheduled workflows in public repos after 60 days with no activity.
 on:
   schedule:
     # 1st of each month, 18:00 UTC
@@ -45,6 +49,8 @@ jobs:
 
           BEFORE=$(git rev-parse HEAD)
           VERSION_BEFORE=$(read_version)
+          echo "version_before=$VERSION_BEFORE" >> $GITHUB_OUTPUT
+          echo "upstream=$(git rev-parse --short upstream/main)" >> $GITHUB_OUTPUT
 
           git merge upstream/main --no-edit
 
@@ -130,3 +136,58 @@ jobs:
             Install the APK matching your phone's ABI (most modern phones: `arm64-v8a`; if unsure use `universal`).
           files: |
             app/build/outputs/apk/alpha/release/*.apk
+
+      # ---- always: record this run and keep the repository active ----
+
+      - name: Commit run status
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          EVENT: ${{ github.event_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          UPSTREAM: ${{ steps.merge.outputs.upstream }}
+          CHANGED: ${{ steps.merge.outputs.changed }}
+          RELEASED: ${{ steps.merge.outputs.released }}
+          VERSION_BEFORE: ${{ steps.merge.outputs.version_before }}
+          VERSION: ${{ steps.merge.outputs.version }}
+        run: |
+          # Commit the status on top of whatever main is now, on a clean tree: a conflicting
+          # merge leaves the tree mid-merge, and a successful merge has already been pushed.
+          # (Throwaway runner checkout, so resetting loses nothing.)
+          git merge --abort 2>/dev/null || true
+          git fetch origin main
+          git reset --hard origin/main
+
+          case "$CHANGED" in
+            true)  SYNC="已合并新的上游提交" ;;
+            false) SYNC="已是最新，无新提交" ;;
+            *)     SYNC="未完成（合并失败，请查看运行详情）" ;;
+          esac
+          case "$RELEASED" in
+            true)  RELEASE="v${VERSION}-webdav" ;;
+            false) RELEASE="版本未变，未发布" ;;
+            *)     RELEASE="未发布" ;;
+          esac
+          if [ "$RELEASED" = "true" ] && [ "$JOB_STATUS" != "success" ]; then
+            RELEASE="v${VERSION}-webdav 构建或发布失败"
+          fi
+
+          {
+            echo "# 上游同步运行记录"
+            echo
+            echo "> 本文件由 Sync Upstream workflow 每次运行时自动覆盖。"
+            echo "> 每次运行都会提交一次，让仓库保持活跃，避免 GitHub 在 60 天无活动后停用定时任务。"
+            echo
+            echo "- 运行时间：$(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "- 触发方式：${EVENT}"
+            echo "- 运行结果：${JOB_STATUS}"
+            echo "- 上游 HEAD：MetaCubeX/ClashMetaForAndroid@${UPSTREAM:-未知}"
+            echo "- 代码同步：${SYNC}"
+            echo "- 版本：${VERSION_BEFORE:-未知} → ${VERSION:-未知}"
+            echo "- 发布：${RELEASE}"
+            echo "- 运行详情：${RUN_URL}"
+          } > .github/sync-status.md
+
+          git add .github/sync-status.md
+          git commit -m "chore: record upstream sync run ($(date -u +%Y-%m-%d))"
+          git push origin HEAD:main
