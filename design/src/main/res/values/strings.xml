@@ -420,5 +420,4 @@
     <string name="update_local_build">%1$s (local build)</string>
     <string name="project_repository">Project repository</string>
     <string name="project_repository_url" translatable="false">https://github.com/muzi-xiaoren/ClashMetaForAndroid</string>
-    <string name="project_repository_open">Open in browser</string>
 </resources>

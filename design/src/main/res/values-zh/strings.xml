@@ -328,5 +328,4 @@
     <string name="update_download">前往下载</string>
     <string name="update_local_build">%1$s（本地构建）</string>
     <string name="project_repository">项目地址</string>
-    <string name="project_repository_open">在浏览器打开</string>
 </resources>

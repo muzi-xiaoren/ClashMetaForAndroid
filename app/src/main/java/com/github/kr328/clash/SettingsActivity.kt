@@ -14,7 +14,6 @@ import com.github.kr328.clash.update.UpdateChecker
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 
@@ -83,30 +82,18 @@ class SettingsActivity : BaseActivity<SettingsDesign>() {
             .show()
     }
 
-    private fun openRepository(design: SettingsDesign) {
+    private suspend fun openRepository(design: SettingsDesign) {
         val url = getString(R.string.project_repository_url)
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.project_repository)
-            .setMessage(url)
-            .setPositiveButton(R.string.project_repository_open) { _, _ ->
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                } catch (e: ActivityNotFoundException) {
-                    copyRepository(design, url)
-                }
-            }
-            .setNeutralButton(R.string.age_key_copy) { _, _ ->
-                copyRepository(design, url)
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-    }
-
-    private fun copyRepository(design: SettingsDesign, url: String) {
         getSystemService<ClipboardManager>()
             ?.setPrimaryClip(ClipData.newPlainText(getString(R.string.project_repository), url))
 
-        launch { design.showToast(R.string.copied, ToastDuration.Short) }
+        design.showToast(R.string.copied, ToastDuration.Short)
+
+        // The link is already on the clipboard, so a phone without a browser loses nothing.
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: ActivityNotFoundException) {
+        }
     }
 }
