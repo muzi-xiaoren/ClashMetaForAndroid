@@ -30,6 +30,14 @@ dependencies {
     implementation(libs.snakeyaml)
 }
 
+android {
+    defaultConfig {
+        // Tag of the GitHub Release this APK is published under (set by CI), used by
+        // "Check for updates" to tell whether a newer release exists. Empty for local builds.
+        buildConfigField("String", "RELEASE_TAG", "\"${System.getenv("RELEASE_TAG").orEmpty()}\"")
+    }
+}
+
 tasks.getByName("clean", type = Delete::class) {
     delete(file("release"))
 }

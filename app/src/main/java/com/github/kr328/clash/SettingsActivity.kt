@@ -1,9 +1,17 @@
 package com.github.kr328.clash
 
+import android.content.Intent
+import android.net.Uri
 import com.github.kr328.clash.common.util.intent
+import com.github.kr328.clash.design.R
 import com.github.kr328.clash.design.SettingsDesign
+import com.github.kr328.clash.design.ui.ToastDuration
+import com.github.kr328.clash.update.UpdateChecker
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withContext
 
 class SettingsActivity : BaseActivity<SettingsDesign>() {
     override suspend fun main() {
@@ -28,9 +36,43 @@ class SettingsActivity : BaseActivity<SettingsDesign>() {
                             startActivity(MetaFeatureSettingsActivity::class.intent)
                         SettingsDesign.Request.StartWebDav ->
                             startActivity(WebDavSettingsActivity::class.intent)
+                        SettingsDesign.Request.CheckUpdate ->
+                            checkUpdate(design)
                     }
                 }
             }
         }
+    }
+
+    private suspend fun checkUpdate(design: SettingsDesign) {
+        design.showToast(R.string.update_checking, ToastDuration.Short)
+
+        val release = try {
+            withContext(Dispatchers.IO) { UpdateChecker.latest() }
+        } catch (e: Exception) {
+            design.showToast(
+                getString(R.string.update_check_failed, e.message ?: e.javaClass.simpleName),
+                ToastDuration.Long,
+            )
+            return
+        }
+
+        val current = UpdateChecker.currentTag.ifEmpty {
+            getString(R.string.update_local_build, "v${BuildConfig.VERSION_NAME}")
+        }
+
+        if (!UpdateChecker.isNewer(release)) {
+            design.showToast(getString(R.string.update_latest, current), ToastDuration.Long)
+            return
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.update_available)
+            .setMessage(getString(R.string.update_available_message, current, release.name, release.notes))
+            .setPositiveButton(R.string.update_download) { _, _ ->
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.pageUrl)))
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 }

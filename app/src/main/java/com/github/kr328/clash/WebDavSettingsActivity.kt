@@ -2,16 +2,19 @@ package com.github.kr328.clash
 
 import com.github.kr328.clash.design.R
 import com.github.kr328.clash.design.WebDavSettingsDesign
+import com.github.kr328.clash.design.dialog.ModelLogDialogScope
+import com.github.kr328.clash.design.dialog.withModelLogDialog
 import com.github.kr328.clash.design.ui.ToastDuration
 import com.github.kr328.clash.service.model.Profile
+import com.github.kr328.clash.sync.ParsedBackup
 import com.github.kr328.clash.sync.VergeBackup
 import com.github.kr328.clash.sync.WebDavClient
-import com.github.kr328.clash.sync.WebDavException
 import com.github.kr328.clash.util.withProfile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 class WebDavSettingsActivity : BaseActivity<WebDavSettingsDesign>() {
     override suspend fun main() {
@@ -41,67 +44,141 @@ class WebDavSettingsActivity : BaseActivity<WebDavSettingsDesign>() {
             return
         }
 
-        design.showToast(R.string.webdav_syncing, ToastDuration.Long)
+        withModelLogDialog(getString(R.string.webdav_sync)) {
+            try {
+                log(getString(R.string.webdav_log_connecting, url))
 
-        // Download the newest backup off the WebDAV server and parse out its subscriptions.
-        val parsed = try {
-            withContext(Dispatchers.IO) {
-                val client = WebDavClient(url, user, pass)
-                val backups = client.listBackups()
-                if (backups.isEmpty()) null else VergeBackup.parse(client.download(backups.first()))
+                // Download the newest backup off the WebDAV server and parse out its subscriptions.
+                val backup = withContext(Dispatchers.IO) {
+                    val client = WebDavClient(url, user, pass)
+                    val latest = client.listBackups().firstOrNull() ?: return@withContext null
+                    latest to VergeBackup.parse(client.download(latest))
+                }
+
+                if (backup == null) {
+                    log(getString(R.string.webdav_no_backup_found))
+                    return@withModelLogDialog
+                }
+
+                log(getString(R.string.webdav_log_found_backup, backup.first))
+                log(getString(R.string.webdav_log_parsed, backup.second.remotes.size, backup.second.skippedLocal))
+
+                applyBackup(backup.second)
+            } catch (e: Exception) {
+                log(getString(R.string.webdav_sync_failed, e.message ?: e.javaClass.simpleName))
             }
-        } catch (e: WebDavException) {
-            design.showToast(getString(R.string.webdav_sync_failed, e.message ?: ""), ToastDuration.Long)
-            return
-        } catch (e: Exception) {
-            design.showToast(
-                getString(R.string.webdav_sync_failed, e.message ?: e.javaClass.simpleName),
-                ToastDuration.Long,
-            )
-            return
         }
+    }
 
-        if (parsed == null) {
-            design.showToast(R.string.webdav_no_backup_found, ToastDuration.Long)
-            return
-        }
+    /**
+     * Mirrors Clash Verge's restore, which replaces the whole profile list with the backup's:
+     * each subscription updates its existing local counterpart in place (matched by Verge uid,
+     * then URL, then name) instead of adding a copy, and subscriptions previously synced but
+     * gone from the backup are deleted. Profiles the user created by hand are left alone,
+     * except same-name duplicates of a synced subscription.
+     */
+    private suspend fun ModelLogDialogScope.applyBackup(parsed: ParsedBackup) {
+        val previouslySynced = decodeSynced(uiStore.webdavSyncedProfiles)
+        val synced = LinkedHashMap<String, UUID>()
 
-        // Import each subscription, skipping ones already present (matched by source URL),
-        // so repeated syncs are idempotent rather than creating duplicates.
+        var updated = 0
         var added = 0
-        var existed = 0
+        var removed = 0
         var failed = 0
 
         withProfile {
-            val knownSources = queryAll()
-                .mapNotNull { it.source.takeIf(String::isNotEmpty) }
-                .toHashSet()
+            val candidates = queryAll().filter { it.type == Profile.Type.Url }
+            val claimed = HashSet<UUID>()
 
-            for (remote in parsed.remotes) {
-                if (remote.url in knownSources) {
-                    existed++
-                    continue
+            fun match(uid: String, name: String, url: String): Profile? {
+                val free = candidates.filter { it.uuid !in claimed }
+
+                return free.firstOrNull { it.uuid == previouslySynced[uid] }
+                    ?: free.firstOrNull { it.source == url }
+                    ?: free.firstOrNull { it.name == name }
+            }
+
+            parsed.remotes.forEachIndexed { index, remote ->
+                progress(index, parsed.remotes.size)
+
+                val target = match(remote.uid, remote.name, remote.url)
+                val uuid = if (target != null) {
+                    log(getString(R.string.webdav_log_updating, remote.name))
+                    patch(target.uuid, remote.name, remote.url, target.interval, target.ageSecretKey)
+                    target.uuid
+                } else {
+                    log(getString(R.string.webdav_log_adding, remote.name))
+                    create(Profile.Type.Url, remote.name, remote.url)
                 }
 
-                val uuid = create(Profile.Type.Url, remote.name, remote.url)
+                claimed.add(uuid)
+
                 try {
                     commit(uuid)
-                    knownSources.add(remote.url)
-                    added++
+
+                    synced[remote.uid] = uuid
+
+                    if (target != null) {
+                        updated++
+                        log(getString(R.string.webdav_log_updated, remote.name))
+                    } else {
+                        added++
+                        log(getString(R.string.webdav_log_added, remote.name))
+                    }
                 } catch (e: Exception) {
-                    // Fetch/validation failed — drop the half-created pending profile.
+                    // Fetch/validation failed — drop the pending change; an existing profile
+                    // keeps its last good config and stays synced.
                     try {
                         release(uuid)
                     } catch (_: Exception) {
                     }
+
+                    if (target != null) synced[remote.uid] = uuid
+
                     failed++
+                    log(getString(R.string.webdav_log_item_failed, remote.name, e.message ?: e.javaClass.simpleName))
+                }
+            }
+
+            progress(parsed.remotes.size, parsed.remotes.size)
+
+            val syncedNames = parsed.remotes.map { it.name }.toHashSet()
+            val previousUuids = previouslySynced.values.toHashSet()
+
+            for (profile in candidates) {
+                if (profile.uuid in claimed) continue
+
+                val message = when {
+                    profile.uuid in previousUuids -> R.string.webdav_log_removed
+                    profile.name in syncedNames -> R.string.webdav_log_removed_duplicate
+                    else -> continue
+                }
+
+                try {
+                    delete(profile.uuid)
+                    removed++
+                    log(getString(message, profile.name))
+                } catch (e: Exception) {
+                    failed++
+                    log(getString(R.string.webdav_log_item_failed, profile.name, e.message ?: e.javaClass.simpleName))
                 }
             }
         }
 
-        design.showToast(
-            getString(R.string.webdav_sync_result, added, existed, failed, parsed.skippedLocal),
-            ToastDuration.Long,
-        )
+        uiStore.webdavSyncedProfiles = encodeSynced(synced)
+
+        log(getString(R.string.webdav_log_done, updated, added, removed, failed))
+    }
+
+    private fun decodeSynced(text: String): Map<String, UUID> {
+        return text.lineSequence().mapNotNull { line ->
+            val uid = line.substringBefore('\t')
+            val uuid = runCatching { UUID.fromString(line.substringAfter('\t')) }.getOrNull()
+            if (uid.isEmpty() || uuid == null) null else uid to uuid
+        }.toMap()
+    }
+
+    private fun encodeSynced(synced: Map<String, UUID>): String {
+        return synced.entries.joinToString("\n") { "${it.key}\t${it.value}" }
     }
 }

@@ -113,6 +113,8 @@ jobs:
       - name: Build
         if: steps.merge.outputs.released == 'true'
         run: ./gradlew --no-daemon app:assembleAlphaRelease
+        env:
+          RELEASE_TAG: v${{ steps.merge.outputs.version }}-webdav
 
       - name: Publish Release
         if: steps.merge.outputs.released == 'true'

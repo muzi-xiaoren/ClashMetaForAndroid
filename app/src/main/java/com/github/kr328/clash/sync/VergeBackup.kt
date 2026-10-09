@@ -4,8 +4,8 @@ import org.yaml.snakeyaml.Yaml
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 
-/** A subscription profile recovered from a Clash Verge backup. */
-data class RemoteProfile(val name: String, val url: String)
+/** A subscription profile recovered from a Clash Verge backup, keyed by its Verge `uid`. */
+data class RemoteProfile(val uid: String, val name: String, val url: String)
 
 /** Result of parsing a backup: importable subscriptions and how many local configs were skipped. */
 data class ParsedBackup(val remotes: List<RemoteProfile>, val skippedLocal: Int)
@@ -39,7 +39,8 @@ object VergeBackup {
                     val url = (map["url"] as? String)?.trim().orEmpty()
                     if (url.isEmpty()) continue
                     val name = (map["name"] as? String)?.trim()?.ifEmpty { null } ?: url
-                    remotes.add(RemoteProfile(name, url))
+                    val uid = (map["uid"] as? String)?.trim()?.ifEmpty { null } ?: url
+                    remotes.add(RemoteProfile(uid, name, url))
                 }
                 "local" -> skippedLocal++
             }
