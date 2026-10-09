@@ -63,6 +63,12 @@ class WebDavSettingsActivity : BaseActivity<WebDavSettingsDesign>() {
                 log(getString(R.string.webdav_log_found_backup, backup.first))
                 log(getString(R.string.webdav_log_parsed, backup.second.remotes.size, backup.second.skippedLocal))
 
+                // Replacing everything with an empty list would wipe the phone; treat it as a bad backup.
+                if (backup.second.remotes.isEmpty()) {
+                    log(getString(R.string.webdav_log_empty_backup))
+                    return@withModelLogDialog
+                }
+
                 applyBackup(backup.second)
             } catch (e: Exception) {
                 log(getString(R.string.webdav_sync_failed, e.message ?: e.javaClass.simpleName))
@@ -72,10 +78,10 @@ class WebDavSettingsActivity : BaseActivity<WebDavSettingsDesign>() {
 
     /**
      * Mirrors Clash Verge's restore, which replaces the whole profile list with the backup's:
-     * each subscription updates its existing local counterpart in place (matched by Verge uid,
-     * then URL, then name) instead of adding a copy, and subscriptions previously synced but
-     * gone from the backup are deleted. Profiles the user created by hand are left alone,
-     * except same-name duplicates of a synced subscription.
+     * afterwards the local list holds exactly the backup's subscriptions, and the one Verge had
+     * selected becomes active. Subscriptions that already exist locally (matched by Verge uid,
+     * then URL, then name) are updated in place rather than recreated, so their uuid and proxy
+     * selections survive; every other local profile, of any type, is deleted.
      */
     private suspend fun ModelLogDialogScope.applyBackup(parsed: ParsedBackup) {
         val previouslySynced = decodeSynced(uiStore.webdavSyncedProfiles)
@@ -87,11 +93,11 @@ class WebDavSettingsActivity : BaseActivity<WebDavSettingsDesign>() {
         var failed = 0
 
         withProfile {
-            val candidates = queryAll().filter { it.type == Profile.Type.Url }
+            val existing = queryAll()
             val claimed = HashSet<UUID>()
 
             fun match(uid: String, name: String, url: String): Profile? {
-                val free = candidates.filter { it.uuid !in claimed }
+                val free = existing.filter { it.type == Profile.Type.Url && it.uuid !in claimed }
 
                 return free.firstOrNull { it.uuid == previouslySynced[uid] }
                     ?: free.firstOrNull { it.source == url }
@@ -142,26 +148,23 @@ class WebDavSettingsActivity : BaseActivity<WebDavSettingsDesign>() {
 
             progress(parsed.remotes.size, parsed.remotes.size)
 
-            val syncedNames = parsed.remotes.map { it.name }.toHashSet()
-            val previousUuids = previouslySynced.values.toHashSet()
-
-            for (profile in candidates) {
+            for (profile in existing) {
                 if (profile.uuid in claimed) continue
-
-                val message = when {
-                    profile.uuid in previousUuids -> R.string.webdav_log_removed
-                    profile.name in syncedNames -> R.string.webdav_log_removed_duplicate
-                    else -> continue
-                }
 
                 try {
                     delete(profile.uuid)
                     removed++
-                    log(getString(message, profile.name))
+                    log(getString(R.string.webdav_log_removed, profile.name))
                 } catch (e: Exception) {
                     failed++
                     log(getString(R.string.webdav_log_item_failed, profile.name, e.message ?: e.javaClass.simpleName))
                 }
+            }
+
+            val current = parsed.current?.let { synced[it] }?.let { queryByUUID(it) }
+            if (current != null && current.imported) {
+                setActive(current)
+                log(getString(R.string.webdav_log_activated, current.name))
             }
         }
 

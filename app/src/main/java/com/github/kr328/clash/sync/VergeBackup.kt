@@ -7,8 +7,11 @@ import java.util.zip.ZipInputStream
 /** A subscription profile recovered from a Clash Verge backup, keyed by its Verge `uid`. */
 data class RemoteProfile(val uid: String, val name: String, val url: String)
 
-/** Result of parsing a backup: importable subscriptions and how many local configs were skipped. */
-data class ParsedBackup(val remotes: List<RemoteProfile>, val skippedLocal: Int)
+/**
+ * Result of parsing a backup: importable subscriptions, how many local configs were skipped,
+ * and the uid of the profile Verge had selected (`current`), if any.
+ */
+data class ParsedBackup(val remotes: List<RemoteProfile>, val skippedLocal: Int, val current: String? = null)
 
 /**
  * Reads a Clash Verge backup zip and pulls out the parts CMFA can actually use.
@@ -28,6 +31,7 @@ object VergeBackup {
         val root = Yaml().load<Any?>(profilesYaml) as? Map<String, Any?>
             ?: return ParsedBackup(emptyList(), 0)
         val items = root["items"] as? List<*> ?: return ParsedBackup(emptyList(), 0)
+        val current = (root["current"] as? String)?.trim()?.ifEmpty { null }
 
         val remotes = ArrayList<RemoteProfile>()
         var skippedLocal = 0
@@ -46,7 +50,7 @@ object VergeBackup {
             }
         }
 
-        return ParsedBackup(remotes, skippedLocal)
+        return ParsedBackup(remotes, skippedLocal, current)
     }
 
     private fun readEntry(zipBytes: ByteArray, name: String): String? {
